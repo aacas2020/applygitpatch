@@ -1,0 +1,500 @@
+diff --git a/Infrastructure/AppSettings.cs b/Infrastructure/AppSettings.cs
+new file mode 100644
+--- /dev/null
++++ b/Infrastructure/AppSettings.cs
+@@ -0,0 +1,196 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Xml.Linq;
++using HL7QueueCheck.Infrastructure;
++
++namespace HL7QueueCheck.Configuration
++{
++    /// <summary>
++    /// Loads Environment.xml once, selects the active <Domain> using USERDNSDOMAIN (or first domain),
++    /// and exposes strongly-typed settings.
++    /// </summary>
++    public sealed class AppSettings
++    {
++        public static AppSettings Current { get; private set; } = new AppSettings();
++        public static void Initialize(string envPath)
++        {
++            Current = Load(envPath);
++        }
++
++        public CoreSettings Core { get; init; } = new();
++        public CpuSettings Cpu { get; init; } = new();
++        public ResumeSettings Resume { get; init; } = new();
++
++        public sealed class CoreSettings
++        {
++            public string DBConnectionString { get; init; } = "";
++            public string QuerySummary      { get; init; } = "";
++            public string QueryMessages     { get; init; } = "";
++            public string QueryQueue        { get; init; } = "";
++            public string PatientStatsQuery { get; init; } = "";
++
++            public double MarkerSize { get; init; } = 7;
++            public double WarningTimeMinutes { get; init; } = 2;
++            public double DangerTimeMinutes  { get; init; } = 10;
++
++            public string WarningColorHtml { get; init; } = "#77FFC4C4";
++            public string DangerColorHtml  { get; init; } = "#77FFFFC4";
++        }
++
++        public sealed class CpuSettings
++        {
++            public int HistoryMinutes { get; init; } = 120;
++            public int IntervalSeconds { get; init; } = 5;
++            public int ReadTimeoutSeconds { get; init; } = 3;
++            public double LegendFractionRight { get; init; } = 0.15;
++            public bool StopSamplingOnHide { get; init; } = false;
++
++            public IReadOnlyList<Server> SqlServers { get; init; } = Array.Empty<Server>();
++            public IReadOnlyList<Server> BizTalkServers { get; init; } = Array.Empty<Server>();
++
++            public sealed record Server(string Host, string Label);
++        }
++
++        public sealed class ResumeSettings
++        {
++            public int  GetSuspendedTimeoutSeconds { get; init; } = 30;
++            public bool OnLoadGetSuspended { get; init; } = true;
++        }
++
++        private static AppSettings Load(string envPath)
++        {
++            var doc = XDocument.Load(envPath);
++            var domain = LoadConfigHelper.GetActiveDomain(doc); // picks USERDNSDOMAIN or first <Domain>
++
++            string S(string name, string def = "")
++                => domain.Elements("setting").FirstOrDefault(s => (string?)s.Attribute("Name") == name)
++                        ?.Attribute("Value")?.Value ?? def;
++            int I(string name, int def, int min, int max) => LoadConfigHelper.ParseInt(domain, name, def, min, max);
++            double D(string name, double def, double min, double max) => LoadConfigHelper.ParseDouble(domain, name, def, min, max);
++            bool B(string name, bool def) => LoadConfigHelper.ParseBool(domain, name, def);
++
++            static List<CpuSettings.Server> ReadServers(XElement domain, string settingName)
++            {
++                var cpu = domain.Element("cpu");
++                if (cpu == null) return new();
++                return cpu.Elements("setting")
++                          .Where(s => string.Equals((string?)s.Attribute("Name"), settingName, StringComparison.OrdinalIgnoreCase))
++                          .Select(s => new CpuSettings.Server(
++                              Host: (string?)s.Attribute("Value") ?? "",
++                              Label: (string?)s.Attribute("Label") ?? ""))
++                          .Where(s => !string.IsNullOrWhiteSpace(s.Host))
++                          .GroupBy(s => (s.Host, s.Label), StringComparer.OrdinalIgnoreCase)
++                          .Select(g => g.First())
++                          .ToList();
++            }
++
++            return new AppSettings
++            {
++                Core = new CoreSettings
++                {
++                    DBConnectionString = S("DBConnectionString"),
++                    QuerySummary       = S("query"),
++                    QueryMessages      = S("queryMessages"),
++                    QueryQueue         = S("queryQueue"),
++                    PatientStatsQuery  = S("patientstats"),
++
++                    MarkerSize         = D("markersize", 7, 0.1, 1000),
++                    WarningTimeMinutes = D("warningtime", 2, 0, 100000),
++                    DangerTimeMinutes  = D("dangertime", 10, 0, 100000),
++
++                    WarningColorHtml   = S("warningcolor", "#77FFC4C4"),
++                    DangerColorHtml    = S("dangercolor", "#77FFFFC4"),
++                },
++                Cpu = new CpuSettings
++                {
++                    HistoryMinutes      = I("cpu.historyMinutes", 120, 1, 1440),
++                    IntervalSeconds     = I("cpu.intervalSeconds", 5, 1, 3600),
++                    ReadTimeoutSeconds  = I("cpu.ReadTimeout", 3, 1, 60),
++                    LegendFractionRight = D("cpu.legendFractionRight", 0.15, 0.0, 0.4),
++                    StopSamplingOnHide  = B("cpu.stopSamplingOnHide", false),
++
++                    SqlServers          = ReadServers(domain, "SQL"),
++                    BizTalkServers      = ReadServers(domain, "Biztalk") // matches XML spelling
++                },
++                Resume = new ResumeSettings
++                {
++                    GetSuspendedTimeoutSeconds = I("resume.getsuspendedtimeout", 30, 1, 6000),
++                    OnLoadGetSuspended         = B("resume.onloadgetsuspended", true)
++                }
++            };
++        }
++    }
++}
+diff --git a/App.xaml.cs b/App.xaml.cs
+index 5b6a3c1..d20b0f2 100644
+--- a/App.xaml.cs
++++ b/App.xaml.cs
+@@ -1,7 +1,24 @@
+ using System;
++using System.IO;
+ using System.Windows;
++using HL7QueueCheck.Configuration;
+ 
+ namespace HL7QueueCheck
+ {
+     public partial class App : Application
+     {
++        protected override void OnStartup(StartupEventArgs e)
++        {
++            base.OnStartup(e);
++            try
++            {
++                // Load Environment.xml once for the whole app
++                var envPath = Path.Combine(AppContext.BaseDirectory, "Environment.xml");
++                AppSettings.Initialize(envPath);
++            }
++            catch (Exception ex)
++            {
++                // Fail safe: app can still start, but modules relying on settings may show errors
++                AppLogger.Error(ex, "[App] AppSettings.Initialize failed:");
++            }
++        }
+     }
+ }
+diff --git a/HL7QueueCheck.csproj b/HL7QueueCheck.csproj
+index 9c1f2c8..b6b3f43 100644
+--- a/HL7QueueCheck.csproj
++++ b/HL7QueueCheck.csproj
+@@ -188,6 +188,7 @@
+   </ItemGroup>
+   <ItemGroup>
+     <Compile Include="Infrastructure\AppLogger.cs" />
++    <Compile Include="Infrastructure\AppSettings.cs" />
+     <Compile Include="Infrastructure\LoadConfigHelper.cs" />
+     <Compile Include="Tools\Monitoring\CpuMonitorModel.cs" />
+     <Compile Include="Tools\Monitoring\CpuMonitorPage.xaml.cs">
+diff --git a/HL7Queues/Model.cs b/HL7Queues/Model.cs
+index 7a0d9f8..b4b5d3c 100644
+--- a/HL7Queues/Model.cs
++++ b/HL7Queues/Model.cs
+@@ -1,7 +1,9 @@
+ using HL7QueueCheck.HL7Queues;
++using HL7QueueCheck.Configuration;
+ using ScottPlot;
+ using ScottPlot.Plottable;
+ using System;
++using System.Drawing;
+ using System.Collections.Concurrent;
+ using System.Collections.Generic;
+ using System.Collections.ObjectModel;
+@@ -12,14 +14,12 @@ using System.Data.SqlTypes;
+ using System.Diagnostics;
+ using System.IO;
+ using System.Linq;
+-using System.Text;
++using System.Text;
+ using System.Threading;
+ using System.Threading.Tasks;
+ using System.Windows;
+ using System.Windows.Controls;
+ using System.Windows.Media;
+ using System.Windows.Media.Imaging;
+ using System.Windows.Shapes;
+-using System.Xml;
+ using Xceed.Wpf.Toolkit;
+ using Brushes = System.Windows.Media.Brushes;
+ using Color = System.Drawing.Color;
+@@ -33,10 +33,8 @@ namespace HL7QueueCheck
+     internal class Model
+     {
+         #region environment and configuration
+         Dictionary<ProcessingStatus, string> TextStatusDictionary;
+         Dictionary<ProcessingStatus, SolidColorBrush> ColorStatusDictionary;
+-        XmlDocument EnvironmentDoc { get; set; }
+-        Dictionary<string, string> SettingsDictionary { get; set; }
+         public string pathString { get; set; }
+         MainWindow UIRef { get; set; }
+         #endregion
+@@ -108,20 +106,9 @@ namespace HL7QueueCheck
+             ErrorsFile = System.IO.Path.Combine(pathString, $"Errors-{timestamp}.txt");
+-            EnvironmentDoc = new XmlDocument();
+-            EnvironmentDoc.Load(System.IO.Path.Combine(AppContext.BaseDirectory, @"Environment.xml"));
+-            string domainDNS = System.Environment.GetEnvironmentVariable("USERDNSDOMAIN");
+-            //System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().DomainName;
+-            SettingsDictionary = new Dictionary<string, string>();
+-            var domainSettings = EnvironmentDoc.SelectNodes($@"/Domains/Domain[@Name='{domainDNS}']/*");
+-            foreach(XmlNode singleSetting in domainSettings)
+-            {
+-                SettingsDictionary.Add(singleSetting.Attributes["Name"].Value, singleSetting.Attributes["Value"].Value);
+-            }
+         }
+ 
+         public void ClearData()
+         {
+             try
+@@ -231,8 +218,8 @@ namespace HL7QueueCheck
+                 //SummaryGrid.ItemsSource = ListEntries;
+             });
+-            string SummarySQL = SettingsDictionary["query"];
+-            string queryQueueSQL = SettingsDictionary["queryQueue"];
++            string SummarySQL = AppSettings.Current.Core.QuerySummary;
++            string queryQueueSQL = AppSettings.Current.Core.QueryQueue;
+             while (!StopToken.IsCancellationRequested)
+             {
+                 try
+@@ -414,7 +401,7 @@ namespace HL7QueueCheck
+         }
+         SqlConnection GetNewSqlConnection()
+         {
+-            SqlConnection conn = new SqlConnection(SettingsDictionary["DBConnectionString"]);
++            SqlConnection conn = new SqlConnection(AppSettings.Current.Core.DBConnectionString);
+             conn.Open();
+             return conn;
+         }
+@@ -624,13 +611,12 @@ namespace HL7QueueCheck
+             double QFMPosition = 10;
+             double MMSPosition = 15;
+             double WLSPosition = 20;
+             double MaxYPosition = WLSPosition;
+             double yCoordinate = 0;
+-            double sizeMarker = double.Parse(SettingsDictionary["markersize"]);
+-            double warningtime = double.Parse(SettingsDictionary["warningtime"]);
+-            double dangertime = double.Parse(SettingsDictionary["dangertime"]);
++            double sizeMarker = AppSettings.Current.Core.MarkerSize;
++            double warningtime = AppSettings.Current.Core.WarningTimeMinutes;
++            double dangertime  = AppSettings.Current.Core.DangerTimeMinutes;
+             VLine vLinevar = null;
+             HSpan WarningSpan = null;
+             HSpan DangerSpan = null;
+-            var DangerColor = GetColorSetting("warningcolor");
+-            var WarningColor = GetColorSetting("dangercolor");
++            var WarningColor = System.Drawing.ColorTranslator.FromHtml(AppSettings.Current.Core.WarningColorHtml);
++            var DangerColor  = System.Drawing.ColorTranslator.FromHtml(AppSettings.Current.Core.DangerColorHtml);
+             Bracket vTimeBracket = null;
+             QueueDetailPlot.Dispatcher.Invoke(() =>
+             {
+@@ -804,11 +790,6 @@ namespace HL7QueueCheck
+             {
+             }
+         }
+-        private Color GetColorSetting(string setting)
+-        {
+-            return System.Drawing.ColorTranslator.FromHtml(SettingsDictionary[setting]);
+-        }
+-
+         private void ThreadFileOutputProc()
+         {
+             try
+@@ -916,7 +897,7 @@ namespace HL7QueueCheck
+         private void ThreadMonitorMessagesProc()
+         {
+             try
+             {
+-                string sql = SettingsDictionary["queryMessages"];
++                string sql = AppSettings.Current.Core.QueryMessages;
+                 while (!StopToken.IsCancellationRequested)
+                 {
+                     try
+diff --git a/Tools/Monitoring/CpuMonitorModel.cs b/Tools/Monitoring/CpuMonitorModel.cs
+index 4e1a9a1..ef2f4a4 100644
+--- a/Tools/Monitoring/CpuMonitorModel.cs
++++ b/Tools/Monitoring/CpuMonitorModel.cs
+@@ -1,17 +1,15 @@
+ // Tools/Monitoring/CpuMonitorModel.cs
+ using System;
+ using System.Collections.Concurrent;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ using System.Management;
+ using System.Threading;
+ using System.Threading.Tasks;
+-using System.Xml.Linq;
+-using Config = HL7QueueCheck.Infrastructure.LoadConfigHelper;
++using HL7QueueCheck.Configuration;
+ namespace HL7QueueCheck.Tools.Monitoring
+ {
+     public enum CpuGroup { SQL, BizTalk }
+     internal sealed class CpuMonitorModel : IDisposable
+     {
+@@ -31,7 +29,7 @@ namespace HL7QueueCheck.Tools.Monitoring
+         private readonly Task _consumerTask;
+         private CpuMonitorModel()
+         {
+-            LoadSettings();
++            LoadSettings(); // reads AppSettings.Current
+             _consumerTask = Task.Run(ConsumerLoopAsync);
+         }
+         #region Settings
+@@ -51,61 +49,26 @@ namespace HL7QueueCheck.Tools.Monitoring
+             public string Legend => string.IsNullOrWhiteSpace(Label) ? Host : $"{Host} - {Label}";
+         }
+         private readonly Dictionary<CpuGroup, List<ServerCfg>> _servers
+             = new Dictionary<CpuGroup, List<ServerCfg>>
+             {
+                 [CpuGroup.SQL] = new List<ServerCfg>(),
+                 [CpuGroup.BizTalk] = new List<ServerCfg>()
+             };
+         private void LoadSettings()
+         {
+             try
+             {
+-                string envPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Environment.xml");
+-                var doc = XDocument.Load(envPath);
+-                var domain = Config.GetActiveDomain(doc);
+-                // existing parsing ...
+-                _historyMinutes = Config.ParseInt(domain, "cpu.historyMinutes", 120, 1, 1440);
+-                _intervalSeconds = Config.ParseInt(domain, "cpu.intervalSeconds", 5, 1, 3600);
+-                _readTimeoutSec = Config.ParseInt(domain, "cpu.ReadTimeout", 3, 1, 60);
+-                _legendFractionRight = Config.ParseDouble(domain, "cpu.legendFractionRight", 0.15, 0.0, 0.4);
+-                // NEW
+-                _stopOnHide = Config.ParseBool(domain, "cpu.stopSamplingOnHide", false);
+-                // --- Load servers for both groups ---
+-                _servers[CpuGroup.SQL].Clear();
+-                _servers[CpuGroup.BizTalk].Clear();
+-                LoadServers(domain, "SQL", CpuGroup.SQL);
+-                LoadServers(domain, "Biztalk", CpuGroup.BizTalk); // Name is 'Biztalk' in Environment.xml
+-                AppLogger.Info($"[CPU] Hosts loaded: SQL={_servers[CpuGroup.SQL].Count}, BizTalk={_servers[CpuGroup.BizTalk].Count}");
+-                AppLogger.Info($"[CPU] Settings: interval={_intervalSeconds}s, history={_historyMinutes}min, " +
+-                                $"timeout={_readTimeoutSec}s, legendRight={_legendFractionRight:P0}, stopOnHide={_stopOnHide}");
++                var c = AppSettings.Current.Cpu;
++                _historyMinutes      = c.HistoryMinutes;
++                _intervalSeconds     = c.IntervalSeconds;
++                _readTimeoutSec      = c.ReadTimeoutSeconds;
++                _legendFractionRight = c.LegendFractionRight;
++                _stopOnHide          = c.StopSamplingOnHide;
++
++                _servers[CpuGroup.SQL].Clear();
++                _servers[CpuGroup.BizTalk].Clear();
++                _servers[CpuGroup.SQL].AddRange(c.SqlServers.Select(s => new ServerCfg { Host = s.Host, Label = s.Label }));
++                _servers[CpuGroup.BizTalk].AddRange(c.BizTalkServers.Select(s => new ServerCfg { Host = s.Host, Label = s.Label }));
++                AppLogger.Info($"[CPU] Hosts loaded: SQL={_servers[CpuGroup.SQL].Count}, BizTalk={_servers[CpuGroup.BizTalk].Count}");
++                AppLogger.Info($"[CPU] Settings: interval={_intervalSeconds}s, history={_historyMinutes}min, timeout={_readTimeoutSec}s, legendRight={_legendFractionRight:P0}, stopOnHide={_stopOnHide}");
+             }
+             catch (Exception ex)
+             {
+                 AppLogger.Error(ex, "[CPU] LoadSettings failed");
+             }
+         }
+-
+-        private void LoadServers(XElement domain, string settingName, CpuGroup group)
+-        {
+-            var entries = domain.Element("cpu")?
+-                .Elements("setting")
+-                .Where(s => string.Equals((string)s.Attribute("Name"), settingName, StringComparison.OrdinalIgnoreCase))
+-                .Select(s => new ServerCfg
+-                {
+-                    Host = (string?)s.Attribute("Value") ?? "",
+-                    Label = (string?)s.Attribute("Label") ?? ""
+-                })
+-                .Where(c => !string.IsNullOrWhiteSpace(c.Host))
+-                .Distinct(new HostLabelComparer())
+-                .ToList() ?? new List<ServerCfg>();
+-            _servers[group].Clear();
+-            _servers[group].AddRange(entries);
+-            if (_servers[group].Count == 0)
+-                AppLogger.Warn($"[CPU] No servers for {group} in Environment.xml.");
+-        }
+-        private sealed class HostLabelComparer : IEqualityComparer<ServerCfg>
+-        {
+-            public bool Equals(ServerCfg x, ServerCfg y) => string.Equals(x.Host, y.Host, StringComparison.OrdinalIgnoreCase)
+-                                                             && string.Equals(x.Label, y.Label, StringComparison.OrdinalIgnoreCase);
+-            public int GetHashCode(ServerCfg obj) => (obj.Host + "\n" + obj.Label).ToLowerInvariant().GetHashCode();
+-        }
+         #endregion
+         #region Public surface (read APIs for UI)
+         public int HistoryMinutes => _historyMinutes;
+diff --git a/Tools/Resume/ResumeHL7Page.xaml.cs b/Tools/Resume/ResumeHL7Page.xaml.cs
+index 3f1b5c4..f7f0b7b 100644
+--- a/Tools/Resume/ResumeHL7Page.xaml.cs
++++ b/Tools/Resume/ResumeHL7Page.xaml.cs
+@@ -6,9 +6,8 @@ using System.Threading;
+ using System.Threading.Tasks;
+ using System.Windows;
+ using System.Windows.Controls;
+-using System.Xml.Linq;
+-using Config = HL7QueueCheck.Infrastructure.LoadConfigHelper;
++using HL7QueueCheck.Configuration;
+ namespace HL7QueueCheck.Tools.Resume
+ {
+     public partial class ResumeHL7Page : UserControl
+     {
+@@ -21,29 +20,24 @@ namespace HL7QueueCheck.Tools.Resume
+         public ResumeHL7Page()
+         {
+             InitializeComponent();
+             LoadSettings();
+-            
+-            // Load suspended service names on page load
+-            if(_OnLoadGetSuspended)
+-            {
+-                Loaded += async (_, __) => await RefreshServiceNamesAsync();
+-            }
+-            
++            if (_OnLoadGetSuspended)
++                Loaded += async (_, __) => await RefreshServiceNamesAsync();
+         }
+         private void LoadSettings()
+         {
+             try
+             {
+-                string envPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Environment.xml");
+-                var doc = XDocument.Load(envPath);
+-                var domain = Config.GetActiveDomain(doc);
+-                _OnLoadGetSuspended = Config.ParseBool(domain, "resume.getsuspendedtimeout", false);
+-                _getSuspendedTimeout = Config.ParseInt(domain, "resume.onloadgetsuspended", 30, 30, 6000);
+-                AppLogger.Info($"[ResumeHL7] getsuspendedtimeout={_getSuspendedTimeout}, onloadgetsuspended={_OnLoadGetSuspended}");
++                var r = AppSettings.Current.Resume;
++                // FIX: proper mapping of keys
++                _getSuspendedTimeout = r.GetSuspendedTimeoutSeconds;
++                _OnLoadGetSuspended  = r.OnLoadGetSuspended;
++                AppLogger.Info($"[ResumeHL7] getsuspendedtimeout={_getSuspendedTimeout}, onloadgetsuspended={_OnLoadGetSuspended}");
+             }
+             catch (Exception ex)
+             {
+                 AppLogger.Error(ex, "[ResumeHL7] LoadSettings failed");
+             }
+         }
+diff --git a/MainWindow.xaml.cs b/MainWindow.xaml.cs
+index 9a4d890..be1b3a7 100644
+--- a/MainWindow.xaml.cs
++++ b/MainWindow.xaml.cs
+@@ -1,4 +1,5 @@
+ using HL7QueueCheck.HL7Queues;
++using HL7QueueCheck.Configuration;
+ using HL7QueueCheck.Tools.Monitoring;
+ using System;
+ using System.Collections.ObjectModel;
+@@ -246,24 +247,18 @@ namespace HL7QueueCheck
+         private object CreateToolContent(string toolId, string header)
+         {
+             if (toolId == "ResumeHL7")
+                 return new HL7QueueCheck.Tools.Resume.ResumeHL7Page();
+             if (toolId == "ExtractInstances")
+                 return new HL7QueueCheck.Tools.Resume.ExtractInstancesPage();
+             if (toolId == "PatientStats")
+             {
+-                string connStr = GetSetting("DBConnectionString");
+-                string query = GetSetting("patientstats");
++                string connStr = AppSettings.Current.Core.DBConnectionString;
++                string query   = AppSettings.Current.Core.PatientStatsQuery;
+                 return new HL7QueueCheck.Tools.PatientStatsPage(connStr, query);
+             }
+             if (toolId == "SqlCpuStats")
+             {
+                 return new HL7QueueCheck.Tools.Monitoring.CpuMonitorPage(CpuGroup.SQL, "SQL CPU");
+             }
+             if (toolId == "BizTalkStats")
+             {
+                 return new HL7QueueCheck.Tools.Monitoring.CpuMonitorPage(CpuGroup.BizTalk, "BizTalk CPU");
+             }
+             return new TextBlock { Text = $"Content for {header}", Margin = new Thickness(10) };
+         }
+-        private string GetSetting(string name)
+-        {
+-            string envPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Environment.xml");
+-            var doc = System.Xml.Linq.XDocument.Load(envPath);
+-            var domain = doc.Descendants("Domain")
+-                .FirstOrDefault();
+-            var setting = domain?.Elements("setting")
+-                .FirstOrDefault(s => s.Attribute("Name")?.Value == name);
+-            return setting?.Attribute("Value")?.Value ?? "";
+-        }
+         #endregion
