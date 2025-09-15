@@ -1,0 +1,42 @@
+From 1234567890abcdef1234567890abcdef12345678 Mon Sep 17 00:00:00 2001
+From: Test User <test@example.com>
+Date: Mon, 15 Sep 2025 12:34:56 +1000
+Subject: [PATCH] Sample patch for testing apply logic
+
+---
+ Program.cs  | 4 +++-
+ README.md   | 5 +++++
+ OldFile.txt | 1 -
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+ create mode 100644 README.md
+ delete mode 100644 OldFile.txt
+
+diff --git a/Program.cs b/Program.cs
+index e69de29..4b825dc 100644
+--- a/Program.cs
++++ b/Program.cs
+@@ -1 +1,3 @@
+-console.WriteLine("Hello, world!");
++// Updated greeting
++Console.WriteLine("Hello, patched world!");
++Console.WriteLine("This is a test patch.");
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..cafe123
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,5 @@
++# Sample Patch
++
++This README was added by the sample patch.
++
++Use this file to verify file creation.
+diff --git a/OldFile.txt b/OldFile.txt
+deleted file mode 100644
+index 6f8f577..0000000
+--- a/OldFile.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-This file will be removed by the patch.
+-- 
+2.46.0
