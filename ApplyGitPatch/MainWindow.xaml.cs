@@ -388,7 +388,7 @@ public class PatchApplier
             {
                 if (ln.Kind == ' ')
                 {
-                    if (tempCursor >= oldLines.Count || !NormalizedEquals(oldLines[tempCursor], ln.Text))
+                    if (tempCursor >= oldLines.Count || oldLines[tempCursor] != ln.Text)
                     {
                         throw new InvalidOperationException($"Context mismatch near line {tempCursor + 1}");
                     }
@@ -397,7 +397,7 @@ public class PatchApplier
                 }
                 else if (ln.Kind == '-')
                 {
-                    if (tempCursor >= oldLines.Count || !NormalizedEquals(oldLines[tempCursor], ln.Text))
+                    if (tempCursor >= oldLines.Count || oldLines[tempCursor] != ln.Text)
                     {
                         throw new InvalidOperationException($"Delete mismatch near line {tempCursor + 1}");
                     }
@@ -421,21 +421,21 @@ public class PatchApplier
         System.IO.File.WriteAllText(target, newText);
         result.Messages.Add($"[MOD] {targetRel}");
     }
-}
 
-private static bool NormalizedEquals(string line1, string line2)
-{
-    if (line1 == line2) return true;
-    
-    // Normalize whitespace: convert tabs to spaces and trim trailing whitespace
-    var normalized1 = NormalizeWhitespace(line1);
-    var normalized2 = NormalizeWhitespace(line2);
-    
-    return normalized1 == normalized2;
-}
+    private static bool NormalizedEquals(string line1, string line2)
+    {
+        if (line1 == line2) return true;
+        
+        // Normalize whitespace: convert tabs to spaces and trim trailing whitespace
+        var normalized1 = NormalizeWhitespace(line1);
+        var normalized2 = NormalizeWhitespace(line2);
+        
+        return normalized1 == normalized2;
+    }
 
-private static string NormalizeWhitespace(string line)
-{
-    // Convert tabs to 4 spaces and trim trailing whitespace
-    return line.Replace("\t", "    ").TrimEnd();
+    private static string NormalizeWhitespace(string line)
+    {
+        // Convert tabs to 4 spaces and trim trailing whitespace
+        return line.Replace("\t", "    ").TrimEnd();
+    }
 }
