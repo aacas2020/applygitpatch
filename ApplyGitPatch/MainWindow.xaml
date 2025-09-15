@@ -9,7 +9,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
         <!-- Toolbar -->
@@ -26,19 +26,21 @@
         </DockPanel>
 
         <!-- Patch Input -->
-        <Grid Grid.Row="1">
-            <TextBox x:Name="PatchInput"
-                     AcceptsReturn="True"
-                     AcceptsTab="True"
-                     VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto"
-                     FontFamily="Consolas"
-                     FontSize="12"
-                     TextWrapping="NoWrap"/>
-        </Grid>
+        <GroupBox Grid.Row="1" Header="Patch Content" Margin="0,0,0,4">
+            <Grid>
+                <TextBox x:Name="PatchInput"
+                         AcceptsReturn="True"
+                         AcceptsTab="True"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"
+                         FontSize="12"
+                         TextWrapping="NoWrap"/>
+            </Grid>
+        </GroupBox>
 
         <!-- Log Output -->
-        <GroupBox Grid.Row="2" Header="Log" Margin="0,8,0,0">
+        <GroupBox Grid.Row="2" Header="Log" Margin="0,4,0,0">
             <Grid>
                 <TextBox x:Name="LogOutput"
                          IsReadOnly="True"

@@ -351,7 +351,6 @@ public class PatchApplier
     {
         var targetRel = file.NewPath ?? file.OldPath ?? throw new InvalidOperationException("Modify missing path");
         var target = System.IO.Path.Combine(folder, targetRel);
-        
         if (!System.IO.File.Exists(target))
         {
             EnsureDirectory(target);
@@ -369,10 +368,7 @@ public class PatchApplier
         var original = System.IO.File.ReadAllText(target);
         var newline = original.Contains("\r\n") ? "\r\n" : "\n";
         var oldLines = original.Replace("\r\n", "\n").Split('\n').ToList();
-        
-        // Remove trailing empty line if present
-        if (oldLines.Count > 0 && oldLines[^1] == string.Empty) 
-            oldLines.RemoveAt(oldLines.Count - 1);
+        if (oldLines.Count > 0 && oldLines[^1] == string.Empty) oldLines.RemoveAt(oldLines.Count - 1);
 
         int cursor = 0;
         var output = new List<string>();
@@ -381,26 +377,40 @@ public class PatchApplier
         {
             int oldStartIdx = Math.Max(0, h.OldStart - 1);
 
-            // Copy lines before the hunk
             while (cursor < oldStartIdx && cursor < oldLines.Count)
             {
                 output.Add(oldLines[cursor]);
                 cursor++;
             }
 
-            // Apply the hunk with improved context matching
-            var hunkResult = ApplyHunk(h, oldLines, cursor, result, targetRel);
-            if (!hunkResult.Success)
+            int tempCursor = cursor;
+            foreach (var ln in h.Lines)
             {
-                result.Success = false;
-                return;
+                if (ln.Kind == ' ')
+                {
+                    if (tempCursor >= oldLines.Count || !NormalizedEquals(oldLines[tempCursor], ln.Text))
+                    {
+                        throw new InvalidOperationException($"Context mismatch near line {tempCursor + 1}");
+                    }
+                    output.Add(ln.Text);
+                    tempCursor++;
+                }
+                else if (ln.Kind == '-')
+                {
+                    if (tempCursor >= oldLines.Count || !NormalizedEquals(oldLines[tempCursor], ln.Text))
+                    {
+                        throw new InvalidOperationException($"Delete mismatch near line {tempCursor + 1}");
+                    }
+                    tempCursor++;
+                }
+                else if (ln.Kind == '+')
+                {
+                    output.Add(ln.Text);
+                }
             }
-            
-            output.AddRange(hunkResult.OutputLines);
-            cursor = hunkResult.NewCursor;
+            cursor = tempCursor;
         }
 
-        // Copy remaining lines
         while (cursor < oldLines.Count)
         {
             output.Add(oldLines[cursor]);
@@ -411,135 +421,21 @@ public class PatchApplier
         System.IO.File.WriteAllText(target, newText);
         result.Messages.Add($"[MOD] {targetRel}");
     }
+}
 
-    private static HunkApplyResult ApplyHunk(PatchHunk hunk, List<string> oldLines, int startCursor, PatchApplyResult result, string filePath)
-    {
-        var output = new List<string>();
-        int cursor = startCursor;
-        int contextMismatches = 0;
-        const int maxContextMismatches = 3; // Allow some tolerance
+private static bool NormalizedEquals(string line1, string line2)
+{
+    if (line1 == line2) return true;
+    
+    // Normalize whitespace: convert tabs to spaces and trim trailing whitespace
+    var normalized1 = NormalizeWhitespace(line1);
+    var normalized2 = NormalizeWhitespace(line2);
+    
+    return normalized1 == normalized2;
+}
 
-        foreach (var ln in hunk.Lines)
-        {
-            if (ln.Kind == ' ')
-            {
-                // Context line - should match existing content
-                if (cursor >= oldLines.Count)
-                {
-                    result.Messages.Add($"[WARN] {filePath}: Context line beyond file end at line {cursor + 1}");
-                    contextMismatches++;
-                    if (contextMismatches > maxContextMismatches)
-                    {
-                        throw new InvalidOperationException($"Too many context mismatches in {filePath} near line {cursor + 1}. Expected: '{ln.Text}' but file ended.");
-                    }
-                    // Skip this context line
-                    continue;
-                }
-                
-                if (oldLines[cursor] != ln.Text)
-                {
-                    contextMismatches++;
-                    result.Messages.Add($"[WARN] {filePath}: Context mismatch at line {cursor + 1}. Expected: '{ln.Text}', Found: '{oldLines[cursor]}'");
-                    
-                    if (contextMismatches > maxContextMismatches)
-                    {
-                        throw new InvalidOperationException($"Too many context mismatches in {filePath} near line {cursor + 1}. Expected: '{ln.Text}', Found: '{oldLines[cursor]}'");
-                    }
-                    
-                    // Try to find the expected line nearby (within 5 lines)
-                    bool found = false;
-                    for (int searchOffset = 1; searchOffset <= 5 && cursor + searchOffset < oldLines.Count; searchOffset++)
-                    {
-                        if (oldLines[cursor + searchOffset] == ln.Text)
-                        {
-                            // Found it nearby, add the skipped lines and continue
-                            for (int i = 0; i < searchOffset; i++)
-                            {
-                                output.Add(oldLines[cursor + i]);
-                            }
-                            cursor += searchOffset;
-                            found = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!found)
-                    {
-                        // Still can't find it, skip this context line
-                        continue;
-                    }
-                }
-                
-                output.Add(ln.Text);
-                cursor++;
-            }
-            else if (ln.Kind == '-')
-            {
-                // Deletion line - should match existing content
-                if (cursor >= oldLines.Count)
-                {
-                    result.Messages.Add($"[WARN] {filePath}: Delete line beyond file end at line {cursor + 1}");
-                    contextMismatches++;
-                    if (contextMismatches > maxContextMismatches)
-                    {
-                        throw new InvalidOperationException($"Too many context mismatches in {filePath} near line {cursor + 1}. Expected to delete: '{ln.Text}' but file ended.");
-                    }
-                    continue;
-                }
-                
-                if (oldLines[cursor] != ln.Text)
-                {
-                    contextMismatches++;
-                    result.Messages.Add($"[WARN] {filePath}: Delete mismatch at line {cursor + 1}. Expected to delete: '{ln.Text}', Found: '{oldLines[cursor]}'");
-                    
-                    if (contextMismatches > maxContextMismatches)
-                    {
-                        throw new InvalidOperationException($"Too many context mismatches in {filePath} near line {cursor + 1}. Expected to delete: '{ln.Text}', Found: '{oldLines[cursor]}'");
-                    }
-                    
-                    // Try to find the line to delete nearby
-                    bool found = false;
-                    for (int searchOffset = 1; searchOffset <= 5 && cursor + searchOffset < oldLines.Count; searchOffset++)
-                    {
-                        if (oldLines[cursor + searchOffset] == ln.Text)
-                        {
-                            // Found it nearby, add the skipped lines and then skip the deletion
-                            for (int i = 0; i < searchOffset; i++)
-                            {
-                                output.Add(oldLines[cursor + i]);
-                            }
-                            cursor += searchOffset + 1; // Skip the line we were supposed to delete
-                            found = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!found)
-                    {
-                        // Can't find the line to delete, just skip it
-                        continue;
-                    }
-                }
-                else
-                {
-                    // Successfully found the line to delete, skip it
-                    cursor++;
-                }
-            }
-            else if (ln.Kind == '+')
-            {
-                // Addition line - just add it
-                output.Add(ln.Text);
-            }
-        }
-
-        return new HunkApplyResult { Success = true, OutputLines = output, NewCursor = cursor };
-    }
-
-    private class HunkApplyResult
-    {
-        public bool Success { get; set; }
-        public List<string> OutputLines { get; set; } = new();
-        public int NewCursor { get; set; }
-    }
+private static string NormalizeWhitespace(string line)
+{
+    // Convert tabs to 4 spaces and trim trailing whitespace
+    return line.Replace("\t", "    ").TrimEnd();
 }
